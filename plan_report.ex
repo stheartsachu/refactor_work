@@ -393,7 +393,9 @@ defmodule Planning.PlanReport do
   defp get_current_outcome_revisions({outcome_uuids, reporting_year_uuid, start_date}) do
     outcome_uuids
     |> PlanReportQueries.get_outcome_revisions(reporting_year_uuid)
+    |> IO.inspect(label: "case 1")
     |> get_previous_revisions_if_no_current_revision_exists(outcome_uuids, start_date)
+    |> IO.inspect(label: "case 2")
   end
 
   defp get_previous_revisions_if_no_current_revision_exists(
@@ -450,9 +452,23 @@ defmodule Planning.PlanReport do
 
     outcome_uuids =
       Enum.map(report_data, fn data ->
-        data.outcome_uuid
+        # data.outcome_uuid
+
+        IO.inspect([data.outcome_uuid, data.active_outcome_revision],
+          label: "outcome_uuid || active_outcome_revision"
+        )
+
+        case data.outcome_uuid == data.active_outcome_revision do
+          false ->
+            data.active_outcome_revision
+
+          true ->
+            data.outcome_uuid
+        end
       end)
       |> Enum.uniq()
+
+    IO.inspect(outcome_uuids, label: "outcome_uuids")
 
     {outcome_uuids, reporting_year_uuid, start_date}
   end
@@ -466,17 +482,17 @@ defmodule Planning.PlanReport do
       - organization_uuids: list of Uuid identifiers of organizations
   """
   def get_program_plan_measure_detail_report(institution_uuid, plan_id, organization_uuids) do
-    with {:ok, measure_detail} <-
+    with {:ok, report_data} <-
            PlanReportQueries.get_program_plan_measure_detail_report(plan_id, organization_uuids),
+         {:ok, outcome_revisions} <-
+           report_data
+           |> get_outcome_uuids_from_report_data()
+           |> IO.inspect(label: "uuids")
+           |> get_current_outcome_revisions(),
          {:ok, org_leads} <-
            PlanReportQueries.get_assessment_leads_for_organizations(institution_uuid) do
-      plan = PlanQueries.get_plan(plan_id)
-
-      report_data =
-        measure_detail
-        |> Enum.map(fn plan_outcome ->
-          get_outcome_version(plan_outcome, plan)
-        end)
+      IO.inspect(report_data, label: "report_data")
+      IO.inspect(outcome_revisions, label: "outcome_revision")
 
       measure_terms =
         (PlanReportQueries.get_student_count_terms(
@@ -490,7 +506,12 @@ defmodule Planning.PlanReport do
         |> Enum.uniq()
         |> Enum.group_by(& &1.plan_outcome_measure_uuid, & &1.term_name)
 
-      %{report_data: report_data, org_leads: org_leads, measure_terms: measure_terms}
+      %{
+        report_data: report_data,
+        outcome_revisions: outcome_revisions,
+        org_leads: org_leads,
+        measure_terms: measure_terms
+      }
     end
   end
 
@@ -564,18 +585,15 @@ defmodule Planning.PlanReport do
 
     with {:ok, report_data} <-
            PlanReportQueries.get_program_plan_action_detail_report(plan_id, organization_uuids),
+         {:ok, outcome_revisions} <-
+           report_data
+           |> get_outcome_uuids_from_report_data()
+           |> get_current_outcome_revisions(),
          {:ok, org_leads} <-
            PlanReportQueries.get_assessment_leads_for_organizations(institution_uuid) do
-      plan = PlanQueries.get_plan(plan_id)
-
-      final_report_data =
-        report_data
-        |> Enum.map(fn plan_outcome ->
-          get_outcome_version(plan_outcome, plan)
-        end)
-
       %{
-        report_data: final_report_data,
+        report_data: report_data,
+        outcome_revisions: outcome_revisions,
         org_leads: org_leads,
         budget_request_data: budget_request_data
       }
@@ -593,19 +611,15 @@ defmodule Planning.PlanReport do
   def get_plan_outcome_detail_report(plan_uuid, organization_uuids, institution_uuid) do
     with {:ok, org_leads} <-
            PlanReportQueries.get_assessment_leads_for_organizations(institution_uuid) do
-      plan = PlanQueries.get_plan(plan_uuid)
-
       report_data =
         PlanReportQueries.get_plan_outcome_detail_report(plan_uuid, organization_uuids)
-        |> Enum.map(fn plan_outcome ->
-          get_outcome_version(plan_outcome, plan)
-        end)
 
-      org_leads =
-        org_leads
-        |> Enum.group_by(& &1.organization_uuid, & &1.user)
+      {:ok, outcome_revisions} =
+        report_data
+        |> get_outcome_uuids_from_report_data()
+        |> get_current_outcome_revisions()
 
-      %{report_data: report_data, org_leads: org_leads}
+      %{report_data: report_data, org_leads: org_leads, outcome_revisions: outcome_revisions}
     end
   end
 
@@ -2295,35 +2309,6 @@ defmodule Planning.PlanReport do
       }
       |> Map.merge(budget_request_detail)
     end)
-  end
-
-  defp get_outcome_version(plan_outcome, plan) do
-    case plan_outcome.outcome_uuid do
-      nil ->
-        plan_outcome
-
-      _ ->
-        outcome_details =
-          Planning.Measure.get_current_revision_outcome_details(plan_outcome.outcome_uuid, plan)
-
-        plan_outcome
-        |> Map.drop([
-          :outcome_desc,
-          :outcome_set_name,
-          :outcome_title,
-          :outcome_tags,
-          :outcome_uuid,
-          :is_archived
-        ])
-        |> Map.merge(%{
-          outcome_desc: outcome_details.description,
-          outcome_set_name: outcome_details.organization_outcome_set_name,
-          outcome_title: outcome_details.title,
-          outcome_tags: outcome_details.outcome_tags,
-          outcome_uuid: outcome_details.uuid,
-          is_archived: outcome_details.is_archived
-        })
-    end
   end
 
   defp get_budget_request_data(institution_uuid) do
